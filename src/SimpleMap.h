@@ -22,7 +22,7 @@ class SimpleMap {
         virtual int size();
         virtual void clear();
         virtual void remove(T key);
-        virtual void remove(int i);
+        virtual void removeIndex(int i); // We *MUST* separate overloaded function to avoid errors in cases where the Key is also <int>
         virtual void put(T key, U obj);
         virtual U get(T key);
         virtual T getKey(int i);
@@ -289,12 +289,17 @@ void SimpleMap<T, U>::remove(T key) {
             if (listEnd == h) listEnd = p;
             listSize--;
             delete h;
+            
+            // We *MUST* clear the cache to avoid using deleted element...
+            isCached    = false;
+            lastIndexGot = -1;
+            lastNodeGot = NULL;
         }
     }
 }
 
 template<typename T, typename U>
-void SimpleMap<T, U>::remove(int i) {
+void SimpleMap<T, U>::removeIndex(int i) {
     if (listSize > 0) {
         SimpleMapNode<T, U>* h = getNodeIndex(i);
 
@@ -309,6 +314,11 @@ void SimpleMap<T, U>::remove(int i) {
 
             listSize--;
             delete h;
+
+            // We *MUST* clear the cache to avoid using deleted element...
+            isCached    = false;
+            lastIndexGot = -1;
+            lastNodeGot = NULL;
         }
     }
 }
