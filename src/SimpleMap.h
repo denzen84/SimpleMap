@@ -15,14 +15,17 @@ template<typename T, typename U>
 class SimpleMap {
     public:
         int (*compare)(T & a, T & b);
+        void (*freeItem)(U a);
 
         SimpleMap(int (*compare)(T & a, T & b));
+        SimpleMap(int (*compare)(T & a, T & b), void (*freeItem)(U a)); // Added constructor to provide external automatic memory clean
+
         virtual ~SimpleMap();
 
         virtual int size();
         virtual void clear();
         virtual void remove(T key);
-        virtual void removeIndex(int i); // We *MUST* separate overloaded function to avoid errors in cases where the Key is also <int>
+        virtual void removeIndex(int i); // We *MUST* separate overloaded function to avoid errors
         virtual void put(T key, U obj);
         virtual U get(T key);
         virtual T getKey(int i);
@@ -34,7 +37,19 @@ class SimpleMap {
         virtual void unlock();
         virtual bool isLocked();
 
-    protected:
+        // Fast linear access for kamikadzes. Use responsibly.
+        virtual bool la_begin() { setCache(0, listBegin); return isCached; };
+        virtual bool la_next() { setCache(++lastIndexGot, lastNodeGot=lastNodeGot->next); return isCached; };
+        virtual bool la_isEnd() { return !lastNodeGot; };
+        // Be sure that la_isEnd() returned 'false'
+        virtual T la_getCurrentKey() { return lastNodeGot->key; };
+        virtual U la_getCurrentData() { return lastNodeGot->data; };
+
+    protected:                
+        virtual void clearCache() { isCached = false; lastIndexGot = -1; lastNodeGot = NULL; };
+        virtual void setCache(int index, SimpleMapNode<T, U>* node) { if (node && (index >= 0) && (index < listSize)) { isCached = true; lastIndexGot = index; lastNodeGot = node; } else clearCache(); };
+
+
         int listSize;
         SimpleMapNode<T, U>* listBegin;
         SimpleMapNode<T, U>* listEnd;
@@ -61,6 +76,19 @@ SimpleMap<T, U>::SimpleMap(int (*compare)(T & a, T & b)) {
     lastNodeGot              = NULL;
 }
 
+template<typename T, typename U>
+SimpleMap<T, U>::SimpleMap(int (*compare)(T & a, T & b), void (*freeItem)(U a)) {    
+    SimpleMap<T, U>::freeItem = freeItem;
+    SimpleMap<T, U>::compare = compare;    
+    listBegin                = NULL;
+    listEnd                  = NULL;
+    listSize                 = 0;
+    isCached                 = false;
+    lastIndexGot             = -1;
+    lastNodeGot              = NULL;
+}
+
+
 // Clear Nodes and free Memory
 template<typename T, typename U>
 SimpleMap<T, U>::~SimpleMap() {
@@ -74,45 +102,53 @@ U SimpleMap<T, U>::get(T key) {
 }
 
 template<typename T, typename U>
-SimpleMapNode<T, U>* SimpleMap<T, U>::getNode(T key) {
-    if (listSize > 0) {
-        if ((compare(key, listBegin->key) < 0) || (compare(key, listEnd->key) > 0)) return NULL;
-
-        if (isCached) {
-            if (compare(key, lastNodeGot->key) == 0) return lastNodeGot;
-        }
-
-        SimpleMapNode<T, U>* h = listBegin;
-
+SimpleMapNode<T, U>* SimpleMap<T, U>::getNode(T key) { 
+    //if (listSize <= 0) return NULL;
+    switch(listSize) {    
+      case -2: case -1: case 0: return NULL;
+      case 1: return (compare(key, listBegin->key) == 0) ? listBegin : NULL;
+      case 2: return (compare(key, listBegin->key) == 0) ? listBegin : (compare(key, listEnd->key) == 0) ? listEnd : NULL;
+      default: {
+      if ((compare(key, listBegin->key) < 0) || (compare(key, listEnd->key) > 0)) return NULL;
         int lowerEnd = 0;
         int upperEnd = listSize - 1;
+
+        if (isCached) {
+            if (compare(key, lastNodeGot->key) == 0) return lastNodeGot;            
+            // Some speedups
+            if (compare(key, lastNodeGot->key) > 0) lowerEnd = getIndex(lastNodeGot->key); 
+            if (compare(key, lastNodeGot->key) < 0) upperEnd = getIndex(lastNodeGot->key);
+        }
+        
+
+        SimpleMapNode<T, U>* h = listBegin;
+        
         int res;
         int mid = (lowerEnd + upperEnd) / 2;
-
         int hIndex = 0;
 
         while (lowerEnd <= upperEnd) {
             h      = lastNodeGot;
             hIndex = lastIndexGot;
 
-            res = compare(key, getNodeIndex(mid)->key);
-
-            if (res == 0) {
+            res = compare(key, getNodeIndex(mid)->key);            
+            if (res == 0) {                
                 return lastNodeGot;
-            } else if (res < 0) {
+            } else if (res < 0) {              
                 // when going left, set cached node back to previous cached node
-                lastNodeGot  = h;
-                lastIndexGot = hIndex;
-                isCached     = true;
+                setCache(hIndex, h);
 
                 upperEnd = mid - 1;
                 mid      = (lowerEnd + upperEnd) / 2;
-            } else if (res > 0) {
+        
+            } else if (res > 0) {              
                 lowerEnd = mid + 1;
                 mid      = (lowerEnd + upperEnd) / 2;
+        
             }
         }
-    }
+      }
+    }    
     return NULL;
 }
 
@@ -130,16 +166,12 @@ SimpleMapNode<T, U>* SimpleMap<T, U>::getNodeIndex(int index) {
         hNode = lastNodeGot;
     }
 
-    while (hNode != NULL && c < index) {
+    while ((hNode != NULL) && (c < index)) {
         hNode = hNode->next;
         c++;
     }
 
-    if (hNode) {
-        isCached     = true;
-        lastIndexGot = c;
-        lastNodeGot  = hNode;
-    }
+    if (hNode) setCache(c, hNode);
 
     return hNode;
 }
@@ -154,16 +186,16 @@ void SimpleMap<T, U>::clear() {
     while (h != NULL) {
         toDelete = h;
         h        = h->next;
+        if (freeItem) freeItem(h->data);
         delete toDelete;
+        
     }
 
     listBegin = NULL;
     listEnd   = NULL;
     listSize  = 0;
 
-    isCached     = false;
-    lastIndexGot = -1;
-    lastNodeGot  = NULL;
+    clearCache();
 }
 
 template<typename T, typename U>
@@ -200,18 +232,14 @@ void SimpleMap<T, U>::put(T key, U obj) {
     // replace old node with new one
     if (found) {
         if (h == listBegin) listBegin = newNode;
-
         if (h == listEnd) listEnd = newNode;
 
         if (p) p->next = newNode;
         newNode->next = h->next;
+        if (freeItem) freeItem(h->data);
         delete h;
-
-        lastIndexGot = c;
-        lastNodeGot  = newNode;
-        isCached     = true;
+        setCache(c, newNode);
     }
-
     // create new node
     else if (!locked) {
         if (listSize == 0) {
@@ -221,17 +249,16 @@ void SimpleMap<T, U>::put(T key, U obj) {
 
             lastIndexGot = 0;
         } else {
-            if (compare(key, listEnd->key) >= 0) {
+            if (compare(key, listEnd->key) > 0) {  // Pay attention, there must be comparsion without equal
                 // add at end
                 listEnd->next = newNode;
                 listEnd       = newNode;
 
                 lastIndexGot = listSize;
-            } else if (compare(key, listBegin->key) <= 0) {
+            } else if (compare(key, listBegin->key) < 0) { // Pay attention, there must be comparsion without equal
                 // add at start
                 newNode->next = listBegin;
                 listBegin     = newNode;
-
                 lastIndexGot = 0;
             } else {
                 // insertion sort
@@ -250,17 +277,13 @@ void SimpleMap<T, U>::put(T key, U obj) {
                     }
                 }
                 newNode->next = h;
-
                 if (p) p->next = newNode;
-
                 lastIndexGot = c;
             }
         }
 
         listSize++;
-
-        isCached    = true;
-        lastNodeGot = newNode;
+        setCache(lastIndexGot, newNode);
     }
 }
 
@@ -287,40 +310,39 @@ void SimpleMap<T, U>::remove(T key) {
             else listBegin = h->next;
 
             if (listEnd == h) listEnd = p;
-            listSize--;
+            listSize--;            
+            if (freeItem) freeItem(h->data);
             delete h;
             
             // We *MUST* clear the cache to avoid using deleted element...
-            isCached    = false;
-            lastIndexGot = -1;
-            lastNodeGot = NULL;
+            clearCache();
         }
     }
 }
 
 template<typename T, typename U>
 void SimpleMap<T, U>::removeIndex(int i) {
-    if (listSize > 0) {
+  switch(listSize) {
+    case -2: case -1: case 0: { clearCache(); break; }
+    case 1: { if (freeItem) freeItem(listBegin->data); delete listBegin; listBegin = listEnd = NULL; listSize = 0; clearCache(); break; }
+    default: {
         SimpleMapNode<T, U>* h = getNodeIndex(i);
-
         if (h != NULL) {
+            if (h == listBegin) {
+              listBegin = h->next;
+              setCache(0, listBegin);
+            } else {
             SimpleMapNode<T, U>* p = getNodeIndex(i - 1);
+            if (p != NULL) { p->next = h->next; setCache(i, h->next); }            
+            if (h == listEnd) { listEnd = p; setCache(i - 1, p); }
+            }
 
-            if (p != NULL) p->next = h->next;
-
-            if (h == listBegin) listBegin = h->next;
-
-            if (h == listEnd) listEnd = p;
-
-            listSize--;
+            listSize--;            
+            if (freeItem) freeItem(h->data);
             delete h;
-
-            // We *MUST* clear the cache to avoid using deleted element...
-            isCached    = false;
-            lastIndexGot = -1;
-            lastNodeGot = NULL;
         }
-    }
+  }
+  }
 }
 
 template<typename T, typename U>
